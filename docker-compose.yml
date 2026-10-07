@@ -1,0 +1,32 @@
+version: "3.8"
+
+services:
+  datahub:
+    build: .
+    image: datahub:latest
+    container_name: datahub
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      # Required
+      JWT_SECRET: "${JWT_SECRET:-change-me-to-a-long-random-string}"
+      # Optional overrides
+      PORT: "3000"
+      DATA_DIR: "/app/data"
+      FILE_TTL_DAYS: "7"
+      MAX_FILE_SIZE_MB: "10"
+      USER_QUOTA_MB: "100"
+      PUBLIC_BASE_URL: "http://localhost:3000"
+    volumes:
+      - datahub_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  datahub_data:
+    driver: local

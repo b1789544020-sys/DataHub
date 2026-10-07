@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>DataHub · 云端存储与分享</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo">☁️</span>
+      <span class="title">DataHub</span>
+      <span class="tag">云端存储 · 一键分享</span>
+    </div>
+    <div class="user" id="userBox">
+      <button class="btn ghost" id="btnLogin">登录</button>
+      <button class="btn" id="btnRegister">注册</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <!-- Auth modal -->
+    <div class="modal" id="authModal" hidden>
+      <div class="card">
+        <h2 id="authTitle">登录</h2>
+        <label>用户名
+          <input type="text" id="authUsername" autocomplete="username" placeholder="3-32 位字母/数字/下划线" />
+        </label>
+        <label>密码
+          <input type="password" id="authPassword" autocomplete="current-password" placeholder="至少 6 位" />
+        </label>
+        <div class="actions">
+          <button class="btn ghost" id="authCancel">取消</button>
+          <button class="btn" id="authSubmit">登录</button>
+        </div>
+        <div class="err" id="authErr"></div>
+        <div class="hint" id="authSwitch">还没有账号？<a href="#" id="authToggle">去注册</a></div>
+      </div>
+    </div>
+
+    <!-- Upload area -->
+    <section class="panel">
+      <h2>📤 上传文件</h2>
+      <p class="muted">最大 10MB · 默认 7 天后自动失效 · 单用户总空间 100MB</p>
+      <div id="dropZone" class="drop">
+        <input type="file" id="fileInput" hidden />
+        <p>把文件拖到这里，或 <a href="#" id="pickFile">点击选择</a></p>
+        <p class="muted" id="fileInfo">尚未选择文件</p>
+      </div>
+      <div class="row">
+        <label class="grow">访问密码（可选）
+          <input type="text" id="uploadPassword" placeholder="留空表示不设密码" />
+        </label>
+        <button class="btn" id="btnUpload">上传并生成分享链接</button>
+      </div>
+      <div class="progress" id="progress" hidden>
+        <div class="bar" id="progressBar"></div>
+        <span id="progressText">0%</span>
+      </div>
+      <div class="result" id="result" hidden>
+        <div class="result-row">
+          <span class="label">分享链接</span>
+          <a href="#" id="resultLink" target="_blank"></a>
+          <button class="btn small" id="copyLink">复制</button>
+        </div>
+        <div class="result-row">
+          <span class="label">短码</span>
+          <code id="resultCode"></code>
+          <span class="muted" id="resultExpiry"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- My files -->
+    <section class="panel">
+      <h2>📁 我的文件</h2>
+      <p class="muted" id="usageInfo">登录后查看</p>
+      <table class="files" id="filesTable">
+        <thead>
+          <tr>
+            <th>文件名</th>
+            <th>大小</th>
+            <th>类型</th>
+            <th>短码</th>
+            <th>下载</th>
+            <th>过期</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="filesBody">
+          <tr><td colspan="7" class="empty">登录后查看你的文件</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- API docs (collapsed) -->
+    <section class="panel">
+      <details>
+        <summary><h2 style="display:inline">🔌 API 文档（给开发者）</h2></summary>
+        <pre class="api">
+POST   /api/auth/register      { username, password } → { token }
+POST   /api/auth/login         { username, password } → { token }
+POST   /api/upload             FormData(file) + Authorization → { shareCode, url, expiresAt }
+GET    /api/files              Authorization → [{ id, name, size, shareCode, downloadCount, expiresAt }]
+DELETE /api/files/:id          Authorization → { success }
+GET    /api/s/:code            公开下载（若设密码需先 POST /api/s/:code/verify 拿 token）
+POST   /api/s/:code/verify     { password } → { token }
+GET    /api/s/:code/page       公开分享预览页（HTML）
+        </pre>
+        <pre class="api">
+# 命令行调用示例
+TOKEN=...   # 从 /api/auth/login 获取
+
+# 1) 上传
+curl -X POST http://localhost:3000/api/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@./example.csv"
+
+# 2) 列出我的文件
+curl http://localhost:3000/api/files \
+  -H "Authorization: Bearer $TOKEN"
+
+# 3) 删除
+curl -X DELETE http://localhost:3000/api/files/3 \
+  -H "Authorization: Bearer $TOKEN"
+
+# 4) 公开下载（无密码时）
+curl -O http://localhost:3000/api/s/abc123
+        </pre>
+      </details>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
