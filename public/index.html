@@ -52,6 +52,9 @@
         <label class="grow">访问密码（可选）
           <input type="text" id="uploadPassword" placeholder="留空表示不设密码" />
         </label>
+        <label class="grow">有效期（小时，可选）
+          <input type="text" id="uploadExpires" inputmode="numeric" placeholder="留空默认 7 天，0 = 永久有效" />
+        </label>
         <button class="btn" id="btnUpload">上传并生成分享链接</button>
       </div>
       <div class="progress" id="progress" hidden>
@@ -99,34 +102,39 @@
       <details>
         <summary><h2 style="display:inline">🔌 API 文档（给开发者）</h2></summary>
         <pre class="api">
-POST   /api/auth/register      { username, password } → { token }
-POST   /api/auth/login         { username, password } → { token }
-POST   /api/upload             FormData(file) + Authorization → { shareCode, url, expiresAt }
-GET    /api/files              Authorization → [{ id, name, size, shareCode, downloadCount, expiresAt }]
+POST   /api/auth/register      { username, password } → { token, user }
+POST   /api/auth/login         { username, password } → { token, user }
+GET    /api/auth/me            Authorization → { user }
+POST   /api/upload             FormData(file[, password]) + Authorization
+                               → { id, shareCode, shareUrl, expiresAt, ... }
+GET    /api/files              Authorization → { files: [...], quota: { used, max } }
+GET    /api/files/:id/meta     Authorization → 单个文件元数据
 DELETE /api/files/:id          Authorization → { success }
-GET    /api/s/:code            公开下载（若设密码需先 POST /api/s/:code/verify 拿 token）
-POST   /api/s/:code/verify     { password } → { token }
-GET    /api/s/:code/page       公开分享预览页（HTML）
+GET    /api/s/:code            公开元数据（不下载）
+POST   /api/s/:code/verify     { password } → { token }（仅加密文件需要）
+GET    /api/s/:code/download   公开下载（加密文件带 ?token=...）
+GET    /s/:code                公开分享页（HTML，浏览器直接打开）
         </pre>
         <pre class="api">
 # 命令行调用示例
 TOKEN=...   # 从 /api/auth/login 获取
 
-# 1) 上传
+# 1) 上传（上传成功即返回短链接，无需二次调用）
 curl -X POST http://localhost:3000/api/upload \
   -H "Authorization: Bearer $TOKEN" \
-  -F "file=@./example.csv"
+  -F "file=@./example.csv" \
+  -F "password=optional"
 
 # 2) 列出我的文件
 curl http://localhost:3000/api/files \
   -H "Authorization: Bearer $TOKEN"
 
 # 3) 删除
-curl -X DELETE http://localhost:3000/api/files/3 \
+curl -X DELETE http://localhost:3000/api/files/1 \
   -H "Authorization: Bearer $TOKEN"
 
-# 4) 公开下载（无密码时）
-curl -O http://localhost:3000/api/s/abc123
+# 4) 公开下载（无密码时，8 位短码）
+curl -OJ http://localhost:3000/api/s/Ab3xY9kQ/download
         </pre>
       </details>
     </section>

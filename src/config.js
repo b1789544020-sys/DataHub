@@ -29,14 +29,26 @@ const config = {
   },
 
   db: {
-    path: path.resolve(rootDir, './storage/datahub.db'),
+    path: process.env.DB_PATH
+      ? path.resolve(rootDir, process.env.DB_PATH)
+      : path.resolve(rootDir, './storage/datahub.db'),
   },
 
   rateLimit: {
     // Public share endpoints (per IP)
-    windowMs: 60 * 1000, // 1 minute
-    max: 30,
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_MAX, 10) || 30,
+  },
+
+  authRateLimit: {
+    // register/login (per IP)
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 20,
   },
 };
+
+if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+  console.warn('[config] WARNING: JWT_SECRET is not set; falling back to an insecure built-in secret. Set JWT_SECRET in production.');
+}
 
 module.exports = config;

@@ -1,6 +1,8 @@
 node_modules
 npm-debug.log
 data
+storage
+.testtmp
 .env
 .env.local
 .git

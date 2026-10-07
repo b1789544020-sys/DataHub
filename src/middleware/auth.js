@@ -2,7 +2,7 @@
 // Verifies JWT tokens and attaches user info to req.user.
 
 const jwt = require('jsonwebtoken');
-const config = require('./config');
+const config = require('../config');
 
 function authRequired(req, res, next) {
   const header = req.headers.authorization || '';

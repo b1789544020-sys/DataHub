@@ -17,7 +17,7 @@ function safeUnlink(p) {
 function cleanExpired(db, storageDir) {
   const now = new Date().toISOString().slice(0, 19).replace('T', ' ');
   const rows = db
-    .prepare('SELECT id, stored_name FROM files WHERE expires_at <= ?')
+    .prepare('SELECT id, stored_name FROM files WHERE expires_at IS NOT NULL AND expires_at <= ?')
     .all(now);
 
   let count = 0;

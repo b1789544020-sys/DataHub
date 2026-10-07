@@ -1,5 +1,7 @@
 // DataHub - File Routes
-// POST   /api/upload              multipart file + auth + optional password -> { shareCode, url, ... }
+// POST   /api/upload              multipart file + auth -> { shareCode, url, ... }
+//                                 optional fields: password, expiresIn (hours, 0=never),
+//                                 code (custom 4-32 char share code), note
 // GET    /api/files               auth -> list of my files
 // GET    /api/files/:id/meta      auth -> single file meta (owner only)
 // DELETE /api/files/:id           auth -> delete file (owner only)
@@ -32,6 +34,9 @@ fs.mkdirSync(config.storage.dir, { recursive: true });
 const nanoid = customAlphabet('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', 8);
 const newShareCode = () => nanoid();
 
+// Custom codes accepted on upload (must also match the /s/:code route regex in app.js)
+const CUSTOM_CODE_RE = /^[A-Za-z0-9_-]{4,32}$/;
+
 // -- File storage on disk: <stored_name> = <share_code>.<ext-or-bin> --
 function storedFilenameFor(shareCode, originalName) {
   const ext = path.extname(originalName || '').toLowerCase();
@@ -40,6 +45,13 @@ function storedFilenameFor(shareCode, originalName) {
 
 function safeUnlink(p) {
   try { fs.unlinkSync(p); } catch (_) {}
+}
+
+// SQLite stores datetimes as 'YYYY-MM-DD HH:MM:SS' (UTC); convert to epoch ms.
+function expiresAtMs(row) {
+  const s = row.expires_at;
+  if (!s) return null;
+  return new Date(String(s).replace(' ', 'T') + 'Z').getTime();
 }
 
 // -- multer setup: store on disk, deterministic name --
@@ -82,7 +94,7 @@ function publicFileMeta(row) {
     shareCode: row.share_code,
     hasPassword: !!row.password_hash,
     downloadCount: row.download_count,
-    expiresAt: row.expires_at,
+    expiresAt: row.expires_at ? expiresAtMs(row) : null,
     createdAt: row.created_at,
   };
 }
@@ -100,82 +112,116 @@ router.post('/upload', authRequired, (req, res, next) => {
     }
     next();
   });
-}, async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded (field name must be "file")' });
-  }
-
-  const { originalname, size, mimetype, path: tmpPath } = req.file;
-  const wantsPassword = req.body && req.body.password ? String(req.body.password) : null;
-
-  // Quota check
-  const used = userQuotaUsed(req.user.id);
-  const quotaBytes = config.storage.maxUserQuotaMB * 1024 * 1024;
-  if (used + size > quotaBytes) {
-    safeUnlink(tmpPath);
-    return res.status(413).json({
-      error: `User quota exceeded (${config.storage.maxUserQuotaMB}MB). Used ${(used / 1024 / 1024).toFixed(2)}MB.`,
-    });
-  }
-
-  // Generate unique share code
-  let shareCode;
-  for (let i = 0; i < 5; i++) {
-    shareCode = newShareCode();
-    const exists = db.prepare('SELECT 1 FROM files WHERE share_code = ?').get(shareCode);
-    if (!exists) break;
-    shareCode = null;
-  }
-  if (!shareCode) {
-    safeUnlink(tmpPath);
-    return res.status(500).json({ error: 'Could not generate unique share code' });
-  }
-
-  // Rename tmp file to final name based on share code
-  const finalName = storedFilenameFor(shareCode, originalname);
-  const finalPath = path.join(config.storage.dir, finalName);
-  try {
-    await fsp.rename(tmpPath, finalPath);
-  } catch (e) {
-    safeUnlink(tmpPath);
-    return res.status(500).json({ error: 'Failed to persist file' });
-  }
-
-  // Hash password if provided
-  const passwordHash = wantsPassword ? await bcrypt.hash(wantsPassword, 10) : null;
-
-  // Expiry
-  const expiresAt = new Date(Date.now() + config.storage.linkExpiryDays * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 19)
-    .replace('T', ' ');
-
-  try {
-    const info = db.prepare(`
-      INSERT INTO files (user_id, original_name, stored_name, file_size, mime_type, share_code, password_hash, expires_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      req.user.id,
-      originalname,
-      finalName,
-      size,
-      mimetype || 'application/octet-stream',
-      shareCode,
-      passwordHash,
-      expiresAt
-    );
-
-    const row = db.prepare('SELECT * FROM files WHERE id = ?').get(info.lastInsertRowid);
-    const shareUrl = `${config.baseUrl}/s/${shareCode}`;
-
-    res.status(201).json({
-      ...publicFileMeta(row),
-      shareUrl,
-    });
-  } catch (e) {
-    safeUnlink(finalPath);
-    return res.status(500).json({ error: 'DB insert failed: ' + e.message });
-  }
+}, async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'No file uploaded (field name must be "file")' });
+  }
+
+  const { originalname, size, mimetype, path: tmpPath } = req.file;
+  const body = req.body || {};
+  const wantsPassword = body.password ? String(body.password).trim() : null;
+  if (wantsPassword && wantsPassword.length > 128) {
+    safeUnlink(tmpPath);
+    return res.status(400).json({ error: 'password too long (max 128 chars)' });
+  }
+
+  // Expiry: integer hours; 0 = never expire; omitted = config default (LINK_EXPIRY_DAYS)
+  let expiresAt = null;
+  const rawExp = body.expiresIn !== undefined ? body.expiresIn : body.expires_in;
+  if (rawExp !== undefined && rawExp !== '') {
+    if (!/^\d+$/.test(String(rawExp))) {
+      safeUnlink(tmpPath);
+      return res.status(400).json({ error: 'expiresIn must be a non-negative integer number of hours (0 = never)' });
+    }
+    const hours = parseInt(String(rawExp), 10);
+    if (hours > 0) {
+      expiresAt = new Date(Date.now() + hours * 3600 * 1000)
+        .toISOString().slice(0, 19).replace('T', ' ');
+    }
+  } else {
+    expiresAt = new Date(Date.now() + config.storage.linkExpiryDays * 24 * 3600 * 1000)
+      .toISOString().slice(0, 19).replace('T', ' ');
+  }
+
+  // Share code: optional custom code (4-32 chars) or a server-generated one
+  let shareCode = null;
+  if (body.code) {
+    shareCode = String(body.code).trim();
+    if (!CUSTOM_CODE_RE.test(shareCode)) {
+      safeUnlink(tmpPath);
+      return res.status(400).json({ error: 'code must be 4-32 chars [A-Za-z0-9_-]' });
+    }
+    const clash = db.prepare('SELECT 1 FROM files WHERE LOWER(share_code) = LOWER(?)').get(shareCode);
+    if (clash) {
+      safeUnlink(tmpPath);
+      return res.status(409).json({ error: 'that share code is already in use' });
+    }
+  }
+
+  // Quota check
+  const used = userQuotaUsed(req.user.id);
+  const quotaBytes = config.storage.maxUserQuotaMB * 1024 * 1024;
+  if (used + size > quotaBytes) {
+    safeUnlink(tmpPath);
+    return res.status(413).json({
+      error: `User quota exceeded (${config.storage.maxUserQuotaMB}MB). Used ${(used / 1024 / 1024).toFixed(2)}MB.`,
+    });
+  }
+
+  if (!shareCode) {
+    for (let i = 0; i < 5; i++) {
+      const candidate = newShareCode();
+      const exists = db.prepare('SELECT 1 FROM files WHERE share_code = ?').get(candidate);
+      if (!exists) { shareCode = candidate; break; }
+    }
+    if (!shareCode) {
+      safeUnlink(tmpPath);
+      return res.status(500).json({ error: 'Could not generate unique share code' });
+    }
+  }
+
+  // Rename tmp file to final name based on share code
+  const finalName = storedFilenameFor(shareCode, originalname);
+  const finalPath = path.join(config.storage.dir, finalName);
+  try {
+    await fsp.rename(tmpPath, finalPath);
+  } catch (e) {
+    safeUnlink(tmpPath);
+    return res.status(500).json({ error: 'Failed to persist file' });
+  }
+
+  // Hash password if provided
+  const passwordHash = wantsPassword ? await bcrypt.hash(wantsPassword, 10) : null;
+
+  try {
+    const info = db.prepare(`
+      INSERT INTO files (user_id, original_name, stored_name, file_size, mime_type, share_code, password_hash, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      req.user.id,
+      originalname,
+      finalName,
+      size,
+      mimetype || 'application/octet-stream',
+      shareCode,
+      passwordHash,
+      expiresAt
+    );
+
+    const row = db.prepare('SELECT * FROM files WHERE id = ?').get(info.lastInsertRowid);
+    const shareUrl = `${config.baseUrl}/s/${shareCode}`;
+
+    res.status(201).json({
+      ...publicFileMeta(row),
+      shareUrl,
+    });
+  } catch (e) {
+    safeUnlink(finalPath);
+    if (String(e.message || '').includes('UNIQUE')) {
+      return res.status(409).json({ error: 'that share code is already in use' });
+    }
+    return res.status(500).json({ error: 'DB insert failed: ' + e.message });
+  }
 });
 
 // ============================================================
@@ -211,13 +257,26 @@ router.delete('/files/:id', authRequired, (req, res) => {
 });
 
 // ============================================================
+// Get one of my files' metadata
+// ============================================================
+router.get('/files/:id/meta', authRequired, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid id' });
+
+  const row = db.prepare('SELECT * FROM files WHERE id = ? AND user_id = ?').get(id, req.user.id);
+  if (!row) return res.status(404).json({ error: 'file not found' });
+
+  res.json(publicFileMeta(row));
+});
+
+// ============================================================
 // Public: get share metadata (no download)
 // ============================================================
 router.get('/s/:code', shareLimiter, (req, res) => {
   const row = db.prepare('SELECT * FROM files WHERE share_code = ?').get(req.params.code);
   if (!row) return res.status(404).json({ error: '分享链接不存在' });
 
-  if (new Date(row.expires_at).getTime() <= Date.now()) {
+  if (row.expires_at && expiresAtMs(row) <= Date.now()) {
     // lazy cleanup
     db.prepare('DELETE FROM files WHERE id = ?').run(row.id);
     safeUnlink(path.join(config.storage.dir, row.stored_name));
@@ -229,7 +288,7 @@ router.get('/s/:code', shareLimiter, (req, res) => {
     size: row.file_size,
     mime: row.mime_type,
     hasPassword: !!row.password_hash,
-    expiresAt: row.expires_at,
+    expiresAt: row.expires_at ? expiresAtMs(row) : null,
     downloadCount: row.download_count,
     previewable: isPreviewable(row.mime_type, row.original_name),
   });
@@ -242,7 +301,7 @@ router.post('/s/:code/verify', shareLimiter, async (req, res) => {
   const { password } = req.body || {};
   const row = db.prepare('SELECT * FROM files WHERE share_code = ?').get(req.params.code);
   if (!row) return res.status(404).json({ error: '分享链接不存在' });
-  if (new Date(row.expires_at).getTime() <= Date.now()) {
+  if (row.expires_at && expiresAtMs(row) <= Date.now()) {
     return res.status(410).json({ error: '分享链接已过期' });
   }
   if (!row.password_hash) {
@@ -267,7 +326,7 @@ router.post('/s/:code/verify', shareLimiter, async (req, res) => {
 router.get('/s/:code/download', shareLimiter, async (req, res) => {
   const row = db.prepare('SELECT * FROM files WHERE share_code = ?').get(req.params.code);
   if (!row) return res.status(404).json({ error: '分享链接不存在' });
-  if (new Date(row.expires_at).getTime() <= Date.now()) {
+  if (row.expires_at && expiresAtMs(row) <= Date.now()) {
     return res.status(410).json({ error: '分享链接已过期' });
   }
 
@@ -300,17 +359,14 @@ router.get('/s/:code/download', shareLimiter, async (req, res) => {
   // Bump counter (best-effort)
   try { db.prepare('UPDATE files SET download_count = download_count + 1 WHERE id = ?').run(row.id); } catch (_) {}
 
+  const disposition = wantsPreview ? 'inline' : 'attachment';
+  const fname = encodeURIComponent(row.original_name);
   res.setHeader('Content-Type', row.mime_type || 'application/octet-stream');
   res.setHeader('Content-Length', row.file_size);
   res.setHeader(
     'Content-Disposition',
-    `attachment; filename="${encodeURIComponent(row.original_name)}"`
+    `${disposition}; filename="${fname}"; filename*=UTF-8''${fname}`
   );
-
-  if (wantsPreview) {
-    // For preview, return inline
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(row.original_name)}"`);
-  }
 
   fs.createReadStream(filePath).pipe(res);
 });
@@ -321,7 +377,7 @@ router.get('/s/:code/page', shareLimiter, (req, res) => {
   if (!row) {
     return res.status(404).send(renderErrorPage('分享链接不存在', 404));
   }
-  if (new Date(row.expires_at).getTime() <= Date.now()) {
+  if (row.expires_at && expiresAtMs(row) <= Date.now()) {
     return res.status(410).send(renderErrorPage('分享链接已过期', 410));
   }
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -334,8 +390,8 @@ function isPreviewable(mime, name) {
   const m = (mime || '').toLowerCase();
   const n = (name || '').toLowerCase();
   if (m.startsWith('text/') || m === 'application/json') return true;
-  if (m === 'text/csv' || n.endsWith('.csv')) return true;
-  if (m === 'application/vnd.ms-excel' || m.includes('spreadsheetml')) return true;
+  if (n.endsWith('.csv')) return true;
+  // Note: .xls/.xlsx are binary and cannot be rendered by the built-in text preview.
   return false;
 }
 
@@ -352,7 +408,10 @@ function renderSharePage(row, baseUrl) {
   const isPreview = isPreviewable(row.mime_type, row.original_name);
   const ext = path.extname(row.original_name).toLowerCase();
   const fileSizeHuman = humanSize(row.file_size);
-  const expiresHuman = new Date(row.expires_at).toLocaleString('zh-CN');
+  const expiresHuman = row.expires_at ? new Date(expiresAtMs(row)).toLocaleString('zh-CN') : '永久有效';
+  const expiresBadge = row.expires_at
+    ? `<span class="badge warn">${expiresHuman} 到期</span>`
+    : '<span class="badge ok">永久有效</span>';
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -410,7 +469,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace
       <span class="badge">${ext || '文件'}</span>
       <span class="badge">${fileSizeHuman}</span>
       <span class="badge" id="dlBadge">下载 ${row.download_count} 次</span>
-      <span class="badge warn">${expiresHuman} 到期</span>
+      ${expiresBadge}
     </div>
 
     <div class="row" style="margin-top:20px">
@@ -553,8 +612,9 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:ui-monospace
       }
     } catch(e){ body.innerHTML = '<div class="muted">预览失败</div>'; }
   }
-  // escape() is defined in a way that the editor formatter cannot accidentally
-  // decode the entity tokens (no `&` followed by an entity name ever appears literally in source).
+  // NOTE: this code lives inside a server-side template literal, so do NOT
+  // use backtick characters anywhere in this inline script. Entity tokens are
+  // assembled from char arrays on purpose, so HTML entity text never appears literally.
   function escape(s){
     const A = ['&','a','m','p',';'].join('');
     const L = ['&','l','t',';'].join('');

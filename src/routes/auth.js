@@ -6,11 +6,21 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
 const db = require('../db');
 const config = require('../config');
 const { authRequired } = require('../middleware/auth');
 
 const router = express.Router();
+
+// Throttle brute-force / mass registration per IP
+const authLimiter = rateLimit({
+  windowMs: config.authRateLimit.windowMs,
+  max: config.authRateLimit.max,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts, please slow down' },
+});
 
 const BCRYPT_ROUNDS = 10;
 const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
@@ -27,7 +37,7 @@ function publicUser(u) {
   return { id: u.id, username: u.username, createdAt: u.created_at };
 }
 
-router.post('/register', async (req, res) => {
+router.post('/register', authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
 
   if (!username || !password) {
@@ -56,7 +66,7 @@ router.post('/register', async (req, res) => {
   res.status(201).json({ token, user: publicUser(user) });
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', authLimiter, async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ error: 'username and password are required' });

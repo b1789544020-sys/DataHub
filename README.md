@@ -8,11 +8,11 @@
 
 ## 它能干什么
 
-- 📤 **上传**：注册账号 → `POST /api/upload` 拿到 `fileId`。
-- 🔗 **生成可分享短链接**：`POST /api/share` → `{ "code": "aB3xY", "url": "http://host/s/aB3xY" }`。
-- 🔒 **可选密码** / ⏰ **可选过期时间**。
-- 👀 **预览页**：`/s/:code` 打开就是带下载按钮的 H5 页（手机/电脑/微信都能开）。
-- 🗑️ **管理**：`GET /api/files` 列表、`DELETE /api/files/:id` 删除。
+- 📤 **上传即得链接**：注册账号 → `POST /api/upload`（multipart），响应里直接带 `shareCode` 和 `shareUrl`，无需二次调用。
+- 🔗 **短链接**：默认 8 位随机码，也可用 `code` 字段自定义 4–32 位短码 → `http://host/s/aB3xY9kQ`。
+- 🔒 **可选密码** / ⏰ **可选有效期（小时，0 = 永久）** / 📝 **可选备注**。
+- 👀 **预览页**：`/s/:code` 打开就是带下载按钮的 H5 页（手机/电脑/微信都能开），CSV / JSON / 文本还能在线预览前 200 行。
+- 🗑️ **管理**：`GET /api/files` 列表与配额、`GET /api/files/:id/meta`、`DELETE /api/files/:id` 删除。
 - ⏱️ **自动清理**：过期文件由 cron 每小时清一次（`STORAGE_DIR` / `DB_PATH`）。
 
 完整接口见 [API.md](./API.md)。
@@ -23,9 +23,9 @@
 
 ```bash
 cd DataHub
-cp .env.example .env          # 改 JWT_SECRET、ADMIN_PASSWORD
+cp .env.example .env          # 生产环境务必改 JWT_SECRET（可再调 BASE_URL、容量上限等）
 npm install
-npm run init-db               # 建表 + 默认 admin
+npm run init-db               # 建表（其实首次 npm start 也会自动建）
 npm start                     # http://localhost:3000
 ```
 
@@ -61,21 +61,17 @@ curl http://localhost:3000/healthz
 # AI 助手生成的命令（可直接复制）
 curl -X POST http://localhost:3000/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"you@example.com","password":"xxx"}'
+  -d '{"username":"alice","password":"xxx"}'
 # 拿到 token
 
+# 上传成功就直接返回短链接，无需第二步
 curl -X POST http://localhost:3000/api/upload \
   -H "Authorization: Bearer <TOKEN>" \
   -F "file=@/path/to/clean.csv" \
   -F "expiresIn=72" \
-  -F "password=optional"
-# 拿到 fileId
-
-curl -X POST http://localhost:3000/api/share \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"fileId":"<FILE_ID>","password":"optional","expiresIn":72}'
-# 拿到 {"code":"aB3xY","url":"http://host/s/aB3xY"}
+  -F "password=optional" \
+  -F "code=optional_short_code"
+# 拿到 {"shareCode":"aB3xY9kQ","shareUrl":"http://host/s/aB3xY9kQ", ...}
 ```
 
 3. 把 `http://host/s/aB3xY` 发到微信 / 邮件 / 任何地方，对方点开就是预览页，点"下载"拿文件。
@@ -139,7 +135,8 @@ DataHub/
 │   │   └── files.js        # /api/upload, /api/files, /api/share, /api/s/:code/...
 │   └── jobs/cleanup.js     # cron 清过期
 ├── public/                 # 自带的极简 Web UI
-├── data/                   # 运行时生成（uploads + datahub.db）
+├── storage/                # 运行时生成（上传文件 + datahub.db，已 gitignore）
+├── share.sh                # 可选：命令行一行流上传脚本
 ├── docs/
 │   └── AI_ASSISTANT_PROMPT.md   # 喂给 AI 的 prompt 模板
 ├── API.md                  # 完整接口文档

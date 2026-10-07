@@ -36,6 +36,8 @@ Thumbs.db
 # Test
 coverage/
 .nyc_output/
+.testtmp/
+.testtmp_*
 
 # Build
 dist/

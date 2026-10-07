@@ -32,7 +32,8 @@ db.exec(`
     share_code TEXT UNIQUE NOT NULL,
     password_hash TEXT,
     download_count INTEGER DEFAULT 0,
-    expires_at DATETIME NOT NULL,
+    -- NULL means the share never expires
+    expires_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );

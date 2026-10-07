@@ -44,8 +44,8 @@
   }
 
   function fmtTime(iso) {
-    if (!iso) return '-';
-    const d = new Date(iso.replace(' ', 'T') + 'Z');
+    if (iso === null || iso === undefined || iso === '') return '永久有效';
+    const d = typeof iso === 'number' ? new Date(iso) : new Date(String(iso).replace(' ', 'T') + 'Z');
     if (isNaN(d.getTime())) return iso;
     const now = new Date();
     const diff = (d - now) / 1000;
@@ -136,23 +136,25 @@
     try {
       const r = await fetch(API + '/files', { headers: authHeader() });
       if (r.status === 401) { logout(); return; }
-      const list = await r.json();
+      const data = await r.json();
+      const list = Array.isArray(data) ? data : (data.files || []);
+      const quota = data.quota || null;
       const body = $('filesBody');
-      if (!Array.isArray(list) || list.length === 0) {
+      if (list.length === 0) {
         body.innerHTML = '<tr><td colspan="7" class="empty">还没有上传过文件</td></tr>';
       } else {
         body.innerHTML = list.map(f => {
           const url = window.location.origin + '/s/' + encodeURIComponent(f.shareCode);
           return '<tr>' +
-            '<td class="name">' + escapeHtml(f.name) + '</td>' +
-            '<td>' + fmtSize(f.size) + '</td>' +
+            '<td class="name">' + escapeHtml(f.originalName) + '</td>' +
+            '<td>' + fmtSize(f.fileSize) + '</td>' +
             '<td>' + escapeHtml(f.mimeType || '?') + '</td>' +
-            '<td><a href="' + url + '/page" target="_blank"><code>' + escapeHtml(f.shareCode) + '</code></a></td>' +
+            '<td><a href="' + url + '" target="_blank"><code>' + escapeHtml(f.shareCode) + '</code></a></td>' +
             '<td>' + (f.downloadCount || 0) + '</td>' +
             '<td>' + fmtTime(f.expiresAt) + '</td>' +
             '<td class="actions">' +
               '<button class="btn small ghost" data-copy="' + url + '">复制</button>' +
-              '<button class="btn small" data-page="' + url + '/page">预览</button>' +
+              '<button class="btn small" data-page="' + url + '">预览</button>' +
               '<button class="btn small danger" data-del="' + f.id + '">删除</button>' +
             '</td>' +
           '</tr>';
@@ -168,8 +170,12 @@
         });
       }
       // usage
-      const total = list.reduce((s, f) => s + (f.size || 0), 0);
-      $('usageInfo').textContent = '已用 ' + fmtSize(total) + ' / 100 MB · 共 ' + list.length + ' 个文件';
+      if (quota) {
+        $('usageInfo').textContent = '已用 ' + fmtSize(quota.used) + ' / ' + fmtSize(quota.max) + ' · 共 ' + list.length + ' 个文件';
+      } else {
+        const total = list.reduce((s, f) => s + (f.fileSize || 0), 0);
+        $('usageInfo').textContent = '已用 ' + fmtSize(total) + ' · 共 ' + list.length + ' 个文件';
+      }
     } catch (e) {
       $('filesBody').innerHTML = '<tr><td colspan="7" class="empty">加载失败：' + escapeHtml(e.message) + '</td></tr>';
     }
@@ -214,6 +220,11 @@
     fd.append('file', state.file);
     const pw = $('uploadPassword').value.trim();
     if (pw) fd.append('password', pw);
+    const exp = $('uploadExpires').value.trim();
+    if (exp !== '') {
+      if (!/^\d+$/.test(exp)) { toast('有效期需为非负整数小时（0 = 永久）'); return; }
+      fd.append('expiresIn', exp);
+    }
 
     const progress = $('progress');
     const bar = $('progressBar');
@@ -239,16 +250,19 @@
         if (xhr.status >= 200 && xhr.status < 300 && j.shareCode) {
           const url = window.location.origin + '/s/' + j.shareCode;
           $('result').hidden = false;
-          $('resultLink').href = url + '/page';
-          $('resultLink').textContent = url + '/page';
+          $('resultLink').href = url;
+          $('resultLink').textContent = url;
           $('resultCode').textContent = j.shareCode;
-          $('resultExpiry').textContent = '过期：' + (j.expiresAt || '-');
-          $('copyLink').onclick = () => copyToClipboard(url + '/page', '已复制分享链接');
+          $('resultExpiry').textContent = '过期：' + (j.expiresAt
+            ? new Date(j.expiresAt).toLocaleString()
+            : '永久有效');
+          $('copyLink').onclick = () => copyToClipboard(url, '已复制分享链接');
           toast('上传成功');
           state.file = null;
           $('fileInfo').textContent = '尚未选择文件';
           $('fileInput').value = '';
           $('uploadPassword').value = '';
+          $('uploadExpires').value = '';
           refreshFiles();
         } else {
           toast(j.error || ('上传失败：HTTP ' + xhr.status));

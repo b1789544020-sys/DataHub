@@ -28,10 +28,17 @@ app.use((req, _res, next) => {
   next();
 });
 
-// CORS - allow any origin for the API (since this is a "share to cloud" hub).
-// In production, restrict to your known frontend origins.
+// CORS - open by default (this is a "share to anyone" hub).
+// Set CORS_ORIGIN to a comma-separated allowlist to lock it down.
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const allowed = (config.cors.origin || '*').split(',').map((s) => s.trim()).filter(Boolean);
+  const origin = req.headers.origin;
+  if (allowed.includes('*') || !allowed.length) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (origin && allowed.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,X-Download-Token');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
@@ -61,8 +68,10 @@ if (fs.existsSync(indexHtml)) {
       endpoints: [
         'POST   /api/auth/register',
         'POST   /api/auth/login',
+        'GET    /api/auth/me (auth)',
         'POST   /api/upload (multipart, file field=file)',
         'GET    /api/files (auth)',
+        'GET    /api/files/:id/meta (auth)',
         'DELETE /api/files/:id (auth)',
         'GET    /api/s/:code (public, metadata)',
         'POST   /api/s/:code/verify (public, password)',
@@ -93,8 +102,11 @@ app.use((req, res) => {
 
 // Error handler
 app.use((err, _req, res, _next) => {
-  console.error('[ERR]', err);
-  res.status(500).json({ error: 'Internal server error' });
+  const status = err.status || err.statusCode || 500;
+  if (status >= 500) console.error('[ERR]', err);
+  // body-parser / multer set `expose: true` for safe client-facing messages
+  const message = status < 500 && err.expose ? err.message : 'Internal server error';
+  res.status(status).json({ error: message });
 });
 
 // Cron: clean expired files once an hour
